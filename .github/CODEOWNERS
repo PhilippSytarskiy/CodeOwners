@@ -1,0 +1,5 @@
+# Frontend specific files
+/client/            @PhilippSytarskiy
+
+# Backend specific files
+/app/               @phil2195
