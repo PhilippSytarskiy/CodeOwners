@@ -1,1 +1,3 @@
 Config
+
+testConfig = 1
