@@ -1,4 +1,4 @@
-name: Require Specific Approvals Based on Code Owners
+name: Require Specific Approvals Based on Dynamic Rules
 
 on:
   pull_request:
@@ -20,25 +20,40 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Получаем изменённые файлы и выводим их в лог
+        # Получаем изменённые файлы
         gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path' > changed_files.txt
         echo "Changed files:"
         cat changed_files.txt
 
-    - name: Get Code Owners and Calculate Required Approvals
+    - name: Load approval rules from JSON
+      id: load_owners
+      run: |
+        # Путь к approval_rules.json
+        cat .github/approval_rules.json
+
+    - name: Get Code Owners Based on Rules
       id: get_owners
       run: |
         # Создаем пустой список владельцев кода
         > codeowners.txt
 
-        # Для каждого изменённого файла проверяем его владельцев из CODEOWNERS
+        # Пробегаем по каждому изменённому файлу и сопоставляем с правилами из JSON
         while IFS= read -r file; do
-          echo "Checking owners for $file"  # Лог для каждого файла
-          owners=$(git check-attr owner -- "$file" | cut -d':' -f3)
-          echo "Owners for $file: $owners"  # Лог для вывода владельцев
-          if [ -n "$owners" ]; then
-            echo "$owners" >> codeowners.txt
-          else
+          echo "Checking owners for $file"
+          
+          # Ищем подходящее правило для файла
+          owner_found=false
+          for path in $(jq -r 'keys[]' .github/approval_rules.json); do
+            if [[ "$file" == "$path"* ]]; then
+              owners=$(jq -r --arg path "$path" '.[$path][]' .github/approval_rules.json)
+              echo "Owners for $file: $owners"
+              echo "$owners" >> codeowners.txt
+              owner_found=true
+              break
+            fi
+          done
+          
+          if [ "$owner_found" = false ]; then
             echo "No owners found for $file"
           fi
         done < changed_files.txt
