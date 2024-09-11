@@ -1,4 +1,4 @@
-name: Require Specific Approvals Based on Dynamic Rules
+name: Check Required Approvals
 
 on:
   pull_request:
@@ -7,133 +7,87 @@ on:
 jobs:
   check-required-approvals:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
 
-    - name: Set GH_TOKEN environment variable
-      run: echo "GH_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+      - name: Fetch changed files
+        run: |
+          echo "Fetching changed files from the pull request..."
+          gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path' > changed_files.txt
+          echo "Changed files:"
+          cat changed_files.txt
 
-    - name: Get changed files
-      id: changed_files
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        echo "Fetching changed files..."
-        gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path' > changed_files.txt
-        echo "Changed files:"
-        cat changed_files.txt
+      - name: Fetch approval rules
+        run: |
+          echo "Fetching approval rules..."
+          cat .github/approval_rules.json
 
-    - name: Load approval rules from JSON
-      id: load_owners
-      run: |
-        echo "Approval rules:"
-        cat .github/approval_rules.json
+      - name: Fetch approved reviews from GitHub API
+        run: |
+          echo "Fetching approved reviewers from GitHub API..."
+          gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
+            --jq '.[] | select(.state == "APPROVED") | .user.login' > approved_reviewers.txt
+          
+          echo "Approved reviewers list:"
+          cat approved_reviewers.txt
 
-    - name: Get Code Owners Based on Rules
-      id: get_owners
-      run: |
-        > codeowners.txt
-        echo "Processing changed files..."
-        paths=$(jq -r 'keys[]' .github/approval_rules.json)
-        while IFS= read -r file; do
-          echo "Checking owners for file: $file"
-          owner_found=false
-          clean_file="${file#/}"
+      - name: Check if approved reviewers match the required owners
+        run: |
+          # Извлекаем все пути из approval_rules.json и проверяем на совпадение с изменёнными файлами
+          echo "Checking if approved reviewers match the required owners..."
+          paths=$(jq -r 'keys[]' .github/approval_rules.json)
+          approved_reviewers=$(cat approved_reviewers.txt)
+          all_required_approved=true
 
-          best_match=""
-          best_match_length=0
+          while IFS= read -r file; do
+            echo "Checking owners for file: $file"
+            owner_found=false
+            clean_file="${file#/}"
+            best_match=""
+            best_match_length=0
 
-          echo "Approval paths from JSON:"
-          for path in $paths; do
-            clean_path="${path#/}"
-            echo "Comparing file path '$clean_file' with rule path '$clean_path'"
-            if [[ "$clean_file" == "$clean_path"* ]]; then
-              path_length=${#clean_path}
-              if [[ $path_length -gt $best_match_length ]]; then
-                best_match="$path"
-                best_match_length=$path_length
+            for path in $paths; do
+              clean_path="${path#/}"
+              if [[ "$clean_file" == "$clean_path"* ]]; then
+                path_length=${#clean_path}
+                if [[ $path_length -gt $best_match_length ]]; then
+                  best_match="$path"
+                  best_match_length=$path_length
+                fi
               fi
+            done
+
+            if [[ -n "$best_match" ]]; then
+              owners=$(jq -r --arg path "$best_match" '.[$path][]' .github/approval_rules.json)
+              echo "Required owners for $file: $owners"
+              
+              # Проверяем, что хотя бы один из required owners одобрил изменения
+              owner_approved=false
+              for owner in $owners; do
+                if echo "$approved_reviewers" | grep -q "$owner"; then
+                  owner_approved=true
+                  break
+                fi
+              done
+
+              if [ "$owner_approved" = false ]; then
+                echo "Error: No required owner approved changes for $file."
+                all_required_approved=false
+              else
+                echo "Required owner found for $file."
+              fi
+            else
+              echo "No matching rule found for $file."
             fi
-          done
+          done < changed_files.txt
 
-          if [[ -n "$best_match" ]]; then
-            echo "Best match found: $best_match"
-            owners=$(jq -r --arg path "$best_match" '.[$path][]' .github/approval_rules.json)
-            echo "Owners for $file: $owners"
-            if [ -n "$owners" ]; then  
-              echo "$owners" >> codeowners.txt
-            fi
-            owner_found=true
+          # Если хотя бы для одного файла не нашлось соответствующего владельца, прерываем работу
+          if [ "$all_required_approved" = false ]; then
+            echo "Not all required owners have approved the changes."
+            exit 1
           else
-            echo "No match found for file: $file"
+            echo "All required owners have approved the changes."
           fi
-
-          if [ "$owner_found" = false ]; then
-            echo "No owners found for file: $file"
-          fi
-        done < changed_files.txt
-
-        echo "Removing duplicates from code owners list..."
-        sort -u codeowners.txt -o codeowners.txt
-        echo "Unique code owners:"
-        cat codeowners.txt
-
-        REQUIRED_APPROVALS=$(wc -l < codeowners.txt)
-        echo "Number of required approvals: $REQUIRED_APPROVALS"
-
-        if [ "$REQUIRED_APPROVALS" -gt 0 ]; then
-          echo "REQUIRED_APPROVALS=$REQUIRED_APPROVALS" >> $GITHUB_ENV
-        else
-          echo "No code owners found, skipping approvals check."
-          exit 0
-        fi
-
-    - name: Get PR reviews
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        echo "Fetching approved reviews from GitHub API..."
-        gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
-          --jq '.[] | select(.state == "APPROVED") | .user.login' > approved_reviewers.json
-
-        if [ ! -s approved_reviewers.json ]; then
-          echo "Error: No approved reviewers found or API request failed."
-          cat approved_reviewers.json
-          exit 1
-        fi
-
-        echo "Approved reviewers list:"
-        cat approved_reviewers.json
-
-        # Ensure JSON file is valid
-        if ! jq empty approved_reviewers.json; then
-          echo "Invalid JSON format in approved_reviewers.json"
-          exit 1
-        fi
-
-    - name: Check mandatory approvals
-      run: |
-        APPROVALS_COUNT=0
-
-        while IFS= read -r owner; do
-          if jq -e ". | index(\"${owner}\")" approved_reviewers.json > /dev/null; then
-            echo "${owner} has approved the PR."
-            APPROVALS_COUNT=$((APPROVALS_COUNT + 1))
-          else
-            echo "${owner} has NOT approved the PR."
-          fi
-        done < codeowners.txt
-
-        if [ -z "$REQUIRED_APPROVALS" ]; then
-          REQUIRED_APPROVALS=0
-        fi
-
-        echo "Approvals count: $APPROVALS_COUNT out of $REQUIRED_APPROVALS required."
-        if [ "$APPROVALS_COUNT" -lt "$REQUIRED_APPROVALS" ]; then
-          echo "Not enough approvals from code owners. Required: $REQUIRED_APPROVALS, but got: $APPROVALS_COUNT."
-          exit 1
-        else
-          echo "Sufficient approvals from code owners: $APPROVALS_COUNT out of $REQUIRED_APPROVALS required."
-        fi
