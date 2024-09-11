@@ -36,14 +36,13 @@ jobs:
         > codeowners.txt
 
         echo "Processing changed files..."
-        # Сохраняем все пути из JSON в массив для последующей обработки
         paths=$(jq -r 'keys[]' .github/approval_rules.json)
 
         while IFS= read -r file; do
           echo "Checking owners for file: $file"
           
           owner_found=false
-          clean_file="${file#/}"  # Убираем начальный '/'
+          clean_file="${file#/}"
 
           best_match=""
           best_match_length=0
@@ -54,7 +53,6 @@ jobs:
 
             echo "Comparing file path '$clean_file' with rule path '$clean_path'"
 
-            # Проверяем, начинается ли путь файла с текущего правила и находим самое длинное совпадение
             if [[ "$clean_file" == "$clean_path"* ]]; then
               path_length=${#clean_path}
               if [[ $path_length -gt $best_match_length ]]; then
@@ -68,7 +66,7 @@ jobs:
             echo "Best match found: $best_match"
             owners=$(jq -r --arg path "$best_match" '.[$path][]' .github/approval_rules.json)
             echo "Owners for $file: $owners"
-            if [ -n "$owners" ]; then  # Проверка, что владельцы найдены
+            if [ -n "$owners" ]; then  
               echo "$owners" >> codeowners.txt
             fi
             owner_found=true
@@ -100,17 +98,29 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
+        echo "Fetching approved reviews from GitHub API..."
         gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
           --jq '.[] | select(.state == "APPROVED") | .user.login' > approved_reviewers.json
 
-        echo "Approved reviewers:"
+        if [ ! -s approved_reviewers.json ]; then
+          echo "Error: No approved reviewers found or API request failed."
+          cat approved_reviewers.json
+          exit 1
+        fi
+
+        echo "Approved reviewers list:"
         cat approved_reviewers.json
+
+        # Ensure JSON file is valid
+        if ! jq empty approved_reviewers.json; then
+          echo "Invalid JSON format in approved_reviewers.json"
+          exit 1
+        fi
 
     - name: Check mandatory approvals
       run: |
         APPROVALS_COUNT=0
 
-        # Проверка одобренных ревьюеров на основе codeowners.txt
         while IFS= read -r owner; do
           if jq -e ". | index(\"${owner}\")" approved_reviewers.json > /dev/null; then
             echo "${owner} has approved the PR."
