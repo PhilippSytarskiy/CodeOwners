@@ -12,8 +12,13 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
 
+    - name: Set GH_TOKEN environment variable
+      run: echo "GH_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+
     - name: Get changed files
       id: changed_files
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         # Получаем изменённые файлы
         gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path' > changed_files.txt
@@ -46,13 +51,13 @@ jobs:
         fi
 
     - name: Get PR reviews
-      id: reviews
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         # Получаем список ревью и фильтруем только одобривших
         gh pr reviews ${{ github.event.pull_request.number }} --json author,state --jq '.[] | select(.state == "APPROVED") | .author.login' > approved_reviewers.json
 
     - name: Check mandatory approvals
-      id: check_approvals
       run: |
         # Инициализация счетчика апрувов
         APPROVALS_COUNT=0
