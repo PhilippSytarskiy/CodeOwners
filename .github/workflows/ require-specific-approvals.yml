@@ -20,6 +20,7 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
+        echo "Fetching changed files..."
         gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path' > changed_files.txt
         echo "Changed files:"
         cat changed_files.txt
@@ -34,13 +35,10 @@ jobs:
       id: get_owners
       run: |
         > codeowners.txt
-
         echo "Processing changed files..."
         paths=$(jq -r 'keys[]' .github/approval_rules.json)
-
         while IFS= read -r file; do
           echo "Checking owners for file: $file"
-          
           owner_found=false
           clean_file="${file#/}"
 
@@ -50,9 +48,7 @@ jobs:
           echo "Approval paths from JSON:"
           for path in $paths; do
             clean_path="${path#/}"
-
             echo "Comparing file path '$clean_file' with rule path '$clean_path'"
-
             if [[ "$clean_file" == "$clean_path"* ]]; then
               path_length=${#clean_path}
               if [[ $path_length -gt $best_match_length ]]; then
