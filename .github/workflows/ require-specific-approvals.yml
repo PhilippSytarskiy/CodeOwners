@@ -1,0 +1,76 @@
+name: Require Specific Approvals Based on Code Owners
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  check-required-approvals:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Get changed files
+      id: changed_files
+      run: |
+        # Получаем изменённые файлы
+        gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path' > changed_files.txt
+
+    - name: Get Code Owners and Calculate Required Approvals
+      id: get_owners
+      run: |
+        # Создаем пустой список владельцев кода
+        > codeowners.txt
+
+        # Для каждого изменённого файла проверяем его владельцев из CODEOWNERS
+        while IFS= read -r file; do
+          # Извлекаем владельцев для файла
+          owners=$(git check-attr owner -- "$file" | cut -d':' -f3)
+          if [ -n "$owners" ]; then
+            echo "$owners" >> codeowners.txt
+          fi
+        done < changed_files.txt
+
+        # Убираем дубли из списка владельцев и пересчитываем количество уникальных владельцев
+        sort -u codeowners.txt -o codeowners.txt
+        REQUIRED_APPROVALS=$(wc -l < codeowners.txt)
+
+        # Если владельцы найдены, сохраняем минимальное количество апрувов
+        if [ "$REQUIRED_APPROVALS" -gt 0 ]; then
+          echo "REQUIRED_APPROVALS=$REQUIRED_APPROVALS" >> $GITHUB_ENV
+        else
+          echo "No code owners found, skipping approvals check."
+          exit 0
+        fi
+
+    - name: Get PR reviews
+      id: reviews
+      run: |
+        # Получаем список ревью и фильтруем только одобривших
+        gh pr reviews ${{ github.event.pull_request.number }} --json author,state --jq '.[] | select(.state == "APPROVED") | .author.login' > approved_reviewers.json
+
+    - name: Check mandatory approvals
+      id: check_approvals
+      run: |
+        # Инициализация счетчика апрувов
+        APPROVALS_COUNT=0
+
+        # Для каждого владельца кода проверяем, есть ли его апрув
+        while IFS= read -r owner; do
+          if jq -e ". | index(\"${owner}\")" approved_reviewers.json > /dev/null; then
+            echo "${owner} has approved the PR."
+            APPROVALS_COUNT=$((APPROVALS_COUNT + 1))
+          else
+            echo "${owner} has NOT approved the PR."
+          fi
+        done < codeowners.txt
+
+        # Проверка на достаточное количество апрувов
+        if [ "$APPROVALS_COUNT" -lt "$REQUIRED_APPROVALS" ]; then
+          echo "Not enough approvals from code owners. Required: $REQUIRED_APPROVALS, but got: $APPROVALS_COUNT."
+          exit 1
+        else
+          echo "Sufficient approvals from code owners: $APPROVALS_COUNT out of $REQUIRED_APPROVALS required."
+        fi
