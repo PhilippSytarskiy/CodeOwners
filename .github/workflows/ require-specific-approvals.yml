@@ -25,10 +25,22 @@ jobs:
         echo "Changed files:"
         cat changed_files.txt
 
+        # Проверяем, есть ли изменённые файлы
+        if [ ! -s changed_files.txt ]; then
+          echo "No changed files detected."
+          exit 0
+        fi
+
     - name: Load approval rules from JSON
       id: load_owners
       run: |
-        # Путь к approval_rules.json
+        # Проверяем существование файла с правилами
+        if [ ! -f .github/approval_rules.json ]; then
+          echo "Approval rules file not found!"
+          exit 1
+        fi
+
+        # Выводим правила для проверки
         cat .github/approval_rules.json
 
     - name: Get Code Owners Based on Rules
