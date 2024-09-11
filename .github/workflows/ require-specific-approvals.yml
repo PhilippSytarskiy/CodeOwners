@@ -20,7 +20,6 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Получаем изменённые файлы
         gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path' > changed_files.txt
         echo "Changed files:"
         cat changed_files.txt
@@ -28,33 +27,30 @@ jobs:
     - name: Load approval rules from JSON
       id: load_owners
       run: |
-        # Путь к approval_rules.json
         echo "Approval rules:"
         cat .github/approval_rules.json
 
     - name: Get Code Owners Based on Rules
       id: get_owners
       run: |
-        # Создаем пустой список владельцев кода
         > codeowners.txt
 
-        # Пробегаем по каждому изменённому файлу и сопоставляем с правилами из JSON
         echo "Processing changed files..."
         while IFS= read -r file; do
           echo "Checking owners for file: $file"
           
           owner_found=false
+          clean_file=$(echo "$file" | sed 's|^/||')  # Убираем начальный '/'
 
-          # Логируем все пути из JSON для сопоставления
           echo "Approval paths from JSON:"
           jq -r 'keys[]' .github/approval_rules.json
 
           for path in $(jq -r 'keys[]' .github/approval_rules.json); do
-            # Логируем каждый путь, по которому будет происходить сравнение
-            echo "Comparing file path '$file' with rule path '$path'"
+            clean_path=$(echo "$path" | sed 's|^/||')  # Убираем начальный '/'
 
-            # Сопоставляем файл с правилами директории (учитываем завершающий '/')
-            if [[ "$file" == "$path"* ]] || [[ "$file" == "${path%/}"* ]]; then
+            echo "Comparing file path '$clean_file' with rule path '$clean_path'"
+
+            if [[ "$clean_file" == "$clean_path"* ]]; then
               echo "Match found! File '$file' matches rule path '$path'"
               owners=$(jq -r --arg path "$path" '.[$path][]' .github/approval_rules.json)
               echo "Owners for $file: $owners"
@@ -71,17 +67,14 @@ jobs:
           fi
         done < changed_files.txt
 
-        # Убираем дубли из списка владельцев и выводим список владельцев
         echo "Removing duplicates from code owners list..."
         sort -u codeowners.txt -o codeowners.txt
         echo "Unique code owners:"
         cat codeowners.txt
 
-        # Подсчитываем количество необходимых апрувов
         REQUIRED_APPROVALS=$(wc -l < codeowners.txt)
         echo "Number of required approvals: $REQUIRED_APPROVALS"
 
-        # Если владельцы найдены, сохраняем минимальное количество апрувов
         if [ "$REQUIRED_APPROVALS" -gt 0 ]; then
           echo "REQUIRED_APPROVALS=$REQUIRED_APPROVALS" >> $GITHUB_ENV
         else
@@ -93,7 +86,6 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Используем API для получения данных о ревью и выводим их
         gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
           --jq '.[] | select(.state == "APPROVED") | .user.login' > approved_reviewers.json
         echo "Approved reviewers:"
@@ -101,10 +93,8 @@ jobs:
 
     - name: Check mandatory approvals
       run: |
-        # Инициализация счетчика апрувов
         APPROVALS_COUNT=0
 
-        # Проверяем апрув для каждого владельца кода
         while IFS= read -r owner; do
           if jq -e ". | index(\"${owner}\")" approved_reviewers.json > /dev/null; then
             echo "${owner} has approved the PR."
@@ -114,12 +104,10 @@ jobs:
           fi
         done < codeowners.txt
 
-        # Проверяем, установлена ли переменная REQUIRED_APPROVALS
         if [ -z "$REQUIRED_APPROVALS" ]; then
           REQUIRED_APPROVALS=0
         fi
 
-        # Выводим количество апрувов и проверяем достаточно ли их
         echo "Approvals count: $APPROVALS_COUNT out of $REQUIRED_APPROVALS required."
         if [ "$APPROVALS_COUNT" -lt "$REQUIRED_APPROVALS" ]; then
           echo "Not enough approvals from code owners. Required: $REQUIRED_APPROVALS, but got: $APPROVALS_COUNT."
