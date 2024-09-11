@@ -14,6 +14,8 @@ jobs:
           fetch-depth: 1
 
       - name: Fetch changed files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Fetching changed files from the pull request..."
           gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path' > changed_files.txt
@@ -26,6 +28,8 @@ jobs:
           cat .github/approval_rules.json
 
       - name: Fetch approved reviews from GitHub API
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Fetching approved reviewers from GitHub API..."
           gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
@@ -34,21 +38,21 @@ jobs:
           echo "Approved reviewers list:"
           cat approved_reviewers.txt
 
-      - name: Check if approved reviewers match the required owners
+      - name: Check if all required owners approved
         run: |
-          # Извлекаем все пути из approval_rules.json и проверяем на совпадение с изменёнными файлами
-          echo "Checking if approved reviewers match the required owners..."
+          echo "Checking if all required owners approved changes..."
           paths=$(jq -r 'keys[]' .github/approval_rules.json)
           approved_reviewers=$(cat approved_reviewers.txt)
           all_required_approved=true
 
+          # Проходим по каждому измененному файлу
           while IFS= read -r file; do
             echo "Checking owners for file: $file"
-            owner_found=false
             clean_file="${file#/}"
             best_match=""
             best_match_length=0
 
+            # Ищем правило, которое подходит для этого файла
             for path in $paths; do
               clean_path="${path#/}"
               if [[ "$clean_file" == "$clean_path"* ]]; then
@@ -61,30 +65,25 @@ jobs:
             done
 
             if [[ -n "$best_match" ]]; then
+              # Получаем владельцев, которые должны одобрить изменения для данного пути
               owners=$(jq -r --arg path "$best_match" '.[$path][]' .github/approval_rules.json)
               echo "Required owners for $file: $owners"
-              
-              # Проверяем, что хотя бы один из required owners одобрил изменения
-              owner_approved=false
+
+              # Проверяем, что каждый из этих владельцев дал одобрение
               for owner in $owners; do
-                if echo "$approved_reviewers" | grep -q "$owner"; then
-                  owner_approved=true
-                  break
+                if ! echo "$approved_reviewers" | grep -q "$owner"; then
+                  echo "Error: Required owner $owner has not approved changes for $file."
+                  all_required_approved=false
+                else
+                  echo "Owner $owner has approved changes for $file."
                 fi
               done
-
-              if [ "$owner_approved" = false ]; then
-                echo "Error: No required owner approved changes for $file."
-                all_required_approved=false
-              else
-                echo "Required owner found for $file."
-              fi
             else
               echo "No matching rule found for $file."
             fi
           done < changed_files.txt
 
-          # Если хотя бы для одного файла не нашлось соответствующего владельца, прерываем работу
+          # Если все владельцы одобрили, продолжаем, иначе - ошибка
           if [ "$all_required_approved" = false ]; then
             echo "Not all required owners have approved the changes."
             exit 1
