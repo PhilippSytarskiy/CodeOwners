@@ -36,17 +36,18 @@ jobs:
         > codeowners.txt
 
         echo "Processing changed files..."
+        # Сохраняем все пути из JSON в массив для последующей обработки
+        paths=$(jq -r 'keys[]' .github/approval_rules.json)
+
         while IFS= read -r file; do
           echo "Checking owners for file: $file"
           
           owner_found=false
-          clean_file=$(echo "$file" | sed 's|^/||')  # Убираем начальный '/'
+          clean_file="${file#/}"  # Убираем начальный '/'
 
           echo "Approval paths from JSON:"
-          jq -r 'keys[]' .github/approval_rules.json
-
-          for path in $(jq -r 'keys[]' .github/approval_rules.json); do
-            clean_path=$(echo "$path" | sed 's|^/||')  # Убираем начальный '/'
+          for path in $paths; do
+            clean_path="${path#/}"  # Убираем начальный '/'
 
             echo "Comparing file path '$clean_file' with rule path '$clean_path'"
 
@@ -54,7 +55,9 @@ jobs:
               echo "Match found! File '$file' matches rule path '$path'"
               owners=$(jq -r --arg path "$path" '.[$path][]' .github/approval_rules.json)
               echo "Owners for $file: $owners"
-              echo "$owners" >> codeowners.txt
+              if [ -n "$owners" ]; then  # Проверка, что владельцы найдены
+                echo "$owners" >> codeowners.txt
+              fi
               owner_found=true
               break
             else
