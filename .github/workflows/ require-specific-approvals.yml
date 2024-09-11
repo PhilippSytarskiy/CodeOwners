@@ -20,27 +20,13 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Получаем изменённые файлы
         gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path' > changed_files.txt
         echo "Changed files:"
         cat changed_files.txt
 
-        # Проверяем, есть ли изменённые файлы
-        if [ ! -s changed_files.txt ]; then
-          echo "No changed files detected."
-          exit 0
-        fi
-
     - name: Load approval rules from JSON
       id: load_owners
       run: |
-        # Проверяем существование файла с правилами
-        if [ ! -f .github/approval_rules.json ]; then
-          echo "Approval rules file not found!"
-          exit 1
-        fi
-
-        # Выводим правила для проверки
         cat .github/approval_rules.json
 
     - name: Get Code Owners Based on Rules
@@ -53,10 +39,10 @@ jobs:
         while IFS= read -r file; do
           echo "Checking owners for $file"
           
-          # Ищем подходящее правило для файла
           owner_found=false
           for path in $(jq -r 'keys[]' .github/approval_rules.json); do
-            if [[ "$file" == "$path"* ]]; then
+            # Сопоставляем файл с правилами директории (учитываем завершающий '/')
+            if [[ "$file" == "$path"* ]] || [[ "$file" == "${path%/}"* ]]; then
               owners=$(jq -r --arg path "$path" '.[$path][]' .github/approval_rules.json)
               echo "Owners for $file: $owners"
               echo "$owners" >> codeowners.txt
@@ -91,7 +77,6 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Используем API для получения данных о ревью и выводим их
         gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
           --jq '.[] | select(.state == "APPROVED") | .user.login' > approved_reviewers.json
         echo "Approved reviewers:"
@@ -99,7 +84,6 @@ jobs:
 
     - name: Check mandatory approvals
       run: |
-        # Инициализация счетчика апрувов
         APPROVALS_COUNT=0
 
         # Проверяем апрув для каждого владельца кода
@@ -117,7 +101,6 @@ jobs:
           REQUIRED_APPROVALS=0
         fi
 
-        # Выводим количество апрувов и проверяем достаточно ли их
         echo "Approvals count: $APPROVALS_COUNT out of $REQUIRED_APPROVALS required."
         if [ "$APPROVALS_COUNT" -lt "$REQUIRED_APPROVALS" ]; then
           echo "Not enough approvals from code owners. Required: $REQUIRED_APPROVALS, but got: $APPROVALS_COUNT."
