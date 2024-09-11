@@ -31,7 +31,6 @@ jobs:
 
         # Для каждого изменённого файла проверяем его владельцев из CODEOWNERS
         while IFS= read -r file; do
-          # Извлекаем владельцев для файла
           owners=$(git check-attr owner -- "$file" | cut -d':' -f3)
           if [ -n "$owners" ]; then
             echo "$owners" >> codeowners.txt
@@ -54,8 +53,9 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Получаем список ревью и фильтруем только одобривших
-        gh pr reviews ${{ github.event.pull_request.number }} --json author,state --jq '.[] | select(.state == "APPROVED") | .author.login' > approved_reviewers.json
+        # Используем API для получения данных о ревью
+        gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
+          --jq '.[] | select(.state == "APPROVED") | .user.login' > approved_reviewers.json
 
     - name: Check mandatory approvals
       run: |
