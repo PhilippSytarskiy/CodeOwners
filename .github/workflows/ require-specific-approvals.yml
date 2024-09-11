@@ -50,7 +50,7 @@ jobs:
 
           echo "Approval paths from JSON:"
           for path in $paths; do
-            clean_path="${path#/}"  # Убираем начальный '/'
+            clean_path="${path#/}"
 
             echo "Comparing file path '$clean_file' with rule path '$clean_path'"
 
@@ -102,6 +102,7 @@ jobs:
       run: |
         gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
           --jq '.[] | select(.state == "APPROVED") | .user.login' > approved_reviewers.json
+
         echo "Approved reviewers:"
         cat approved_reviewers.json
 
@@ -109,6 +110,7 @@ jobs:
       run: |
         APPROVALS_COUNT=0
 
+        # Проверка одобренных ревьюеров на основе codeowners.txt
         while IFS= read -r owner; do
           if jq -e ". | index(\"${owner}\")" approved_reviewers.json > /dev/null; then
             echo "${owner} has approved the PR."
