@@ -20,8 +20,10 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Получаем изменённые файлы
+        # Получаем изменённые файлы и выводим их в лог
         gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path' > changed_files.txt
+        echo "Changed files:"
+        cat changed_files.txt
 
     - name: Get Code Owners and Calculate Required Approvals
       id: get_owners
@@ -31,15 +33,24 @@ jobs:
 
         # Для каждого изменённого файла проверяем его владельцев из CODEOWNERS
         while IFS= read -r file; do
+          echo "Checking owners for $file"  # Лог для каждого файла
           owners=$(git check-attr owner -- "$file" | cut -d':' -f3)
+          echo "Owners for $file: $owners"  # Лог для вывода владельцев
           if [ -n "$owners" ]; then
             echo "$owners" >> codeowners.txt
+          else
+            echo "No owners found for $file"
           fi
         done < changed_files.txt
 
-        # Убираем дубли из списка владельцев и пересчитываем количество уникальных владельцев
+        # Убираем дубли из списка владельцев и выводим список владельцев
         sort -u codeowners.txt -o codeowners.txt
+        echo "Unique code owners:"
+        cat codeowners.txt
+
+        # Подсчитываем количество необходимых апрувов
         REQUIRED_APPROVALS=$(wc -l < codeowners.txt)
+        echo "Number of required approvals: $REQUIRED_APPROVALS"
 
         # Если владельцы найдены, сохраняем минимальное количество апрувов
         if [ "$REQUIRED_APPROVALS" -gt 0 ]; then
@@ -53,16 +64,18 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Используем API для получения данных о ревью
+        # Используем API для получения данных о ревью и выводим их
         gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
           --jq '.[] | select(.state == "APPROVED") | .user.login' > approved_reviewers.json
+        echo "Approved reviewers:"
+        cat approved_reviewers.json
 
     - name: Check mandatory approvals
       run: |
         # Инициализация счетчика апрувов
         APPROVALS_COUNT=0
 
-        # Для каждого владельца кода проверяем, есть ли его апрув
+        # Проверяем апрув для каждого владельца кода
         while IFS= read -r owner; do
           if jq -e ". | index(\"${owner}\")" approved_reviewers.json > /dev/null; then
             echo "${owner} has approved the PR."
@@ -72,7 +85,8 @@ jobs:
           fi
         done < codeowners.txt
 
-        # Проверка на достаточное количество апрувов
+        # Выводим количество апрувов и проверяем достаточно ли их
+        echo "Approvals count: $APPROVALS_COUNT out of $REQUIRED_APPROVALS required."
         if [ "$APPROVALS_COUNT" -lt "$REQUIRED_APPROVALS" ]; then
           echo "Not enough approvals from code owners. Required: $REQUIRED_APPROVALS, but got: $APPROVALS_COUNT."
           exit 1
