@@ -15,7 +15,9 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Выполняем этот шаг только при событии pull_request
       - name: Fetch changed files
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -29,7 +31,9 @@ jobs:
           echo "Fetching approval rules..."
           cat .github/approval_rules.json
 
+      # Выполняем этот шаг только при событии pull_request_review (когда получен новый апрув)
       - name: Fetch approved reviews from GitHub API
+        if: github.event_name == 'pull_request_review'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
