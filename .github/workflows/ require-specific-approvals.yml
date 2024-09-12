@@ -4,11 +4,12 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   pull_request_review:
-    types: [submitted] # Добавляем триггер на событие ревью
+    types: [submitted]
 
 jobs:
   check-required-approvals:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -16,6 +17,7 @@ jobs:
           fetch-depth: 1
 
       - name: Fetch changed files
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -30,6 +32,7 @@ jobs:
           cat .github/approval_rules.json
 
       - name: Fetch approved reviews from GitHub API
+        if: github.event_name == 'pull_request_review'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -44,8 +47,9 @@ jobs:
         run: |
           echo "Checking if all required owners approved changes..."
           paths=$(jq -r 'keys[]' .github/approval_rules.json)
-          approved_reviewers=$(cat approved_reviewers.txt)
+          approved_reviewers=$(cat approved_reviewers.txt || echo "")
           all_required_approved=true
+          files_with_no_rules=true
 
           # Проходим по каждому измененному файлу
           while IFS= read -r file; do
@@ -81,14 +85,19 @@ jobs:
                 fi
               done
             else
-              echo "No matching rule found for $file."
+              # Если нет соответствующего правила для файла, пропускаем его
+              echo "No matching rule found for $file. Skipping approval check."
+              files_with_no_rules=false
             fi
           done < changed_files.txt
 
-          # Если все владельцы одобрили, продолжаем, иначе - ошибка
+          # Если все владельцы одобрили или директории не требуют одобрения, продолжаем
           if [ "$all_required_approved" = false ]; then
             echo "Not all required owners have approved the changes."
             exit 1
+          elif [ "$files_with_no_rules" = false ]; then
+            echo "Some files have no matching approval rules. Skipping approval for those."
+            exit 0
           else
             echo "All required owners have approved the changes."
           fi
