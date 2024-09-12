@@ -3,6 +3,8 @@ name: Check Required Approvals
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  pull_request_review:
+    types: [submitted] # Добавляем триггер на событие ревью
 
 jobs:
   check-required-approvals:
