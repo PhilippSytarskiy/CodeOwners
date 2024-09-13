@@ -1,9 +1,6 @@
 name: Check Required Approvals
 
 on:
-  # Объединяем оба события в один job
-  # pull_request:
-  #   types: [opened, synchronize, reopened, review_requested, ready_for_review]
   pull_request_review:
     types: [submitted]
 
@@ -12,91 +9,108 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout code  # Загружаем код репозитория
         uses: actions/checkout@v3
         with:
-          fetch-depth: 1
+          fetch-depth: 1  # Загружаем только последний коммит для ускорения
 
-      - name: Fetch changed files
+      - name: Fetch approval rules and approved reviewers  # Получаем правила одобрения и список одобренных ревьюеров
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Используем токен для взаимодействия с GitHub API
         run: |
-          echo "Fetching changed files from the pull request..."
-          gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path' > changed_files.txt
-          echo "Changed files:"
-          cat changed_files.txt
+          echo "Fetching approval rules and approved reviewers..."
 
-      - name: Fetch approval rules
-        run: |
-          echo "Fetching approval rules..."
-          cat .github/approval_rules.json
+          # Чтение правил одобрения из файла approval_rules.json и сохранение их в переменную
+          approval_rules=$(jq -r 'to_entries[] | {path: .key, owners: .value[]}' .github/approval_rules.json)
+          echo "$approval_rules" > approval_rules.txt  # Сохраняем правила в файл
 
-      - name: Fetch approved reviews from GitHub API
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Fetching approved reviewers from GitHub API..."
-          gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
-            --jq '.[] | select(.state == "APPROVED") | .user.login' > approved_reviewers.txt || echo "" > approved_reviewers.txt
+          # Получаем список ревьюеров, которые одобрили PR, через GitHub API
+          approved_reviewers=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
+            --jq '.[] | select(.state == "APPROVED") | .user.login')
+          echo "$approved_reviewers" > approved_reviewers.txt  # Сохраняем список одобренных ревьюеров
 
-          echo "Approved reviewers list:"
+          echo "Approved reviewers:"  # Выводим список одобренных ревьюеров для отладки
           cat approved_reviewers.txt
 
-      - name: Check if all required owners approved
+      - name: Fetch changed files  # Шаг для получения списка изменённых файлов
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Токен для GitHub API
+        run: |
+          echo "Fetching changed files from the pull request..."
+          # Используем GitHub CLI для получения списка изменённых файлов в PR
+          gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path' > changed_files.txt
+          echo "Changed files:"  # Выводим список изменённых файлов
+          cat changed_files.txt
+
+      - name: Check if all required owners approved  # Проверяем, что все необходимые владельцы одобрили изменения
         run: |
           echo "Checking if all required owners approved changes..."
-          paths=$(jq -r 'keys[]' .github/approval_rules.json)
-          approved_reviewers=$(cat approved_reviewers.txt)
-          all_required_approved=true
-          files_with_no_rules=true
 
-          # Проходим по каждому измененному файлу
-          while IFS= read -r file; do
-            echo "Checking owners for file: $file"
-            clean_file="${file#/}"
-            best_match=""
-            best_match_length=0
+          # Функция для сопоставления правил с изменёнными файлами
+          function match_rules_with_files {
+            local approval_rules="$1"  # Правила одобрения
+            local changed_files="$2"  # Изменённые файлы
 
-            # Ищем правило, которое подходит для этого файла
-            for path in $paths; do
-              clean_path="${path#/}"
-              if [[ "$clean_file" == "$clean_path"* ]]; then
-                path_length=${#clean_path}
-                if [[ $path_length -gt $best_match_length ]]; then
-                  best_match="$path"
-                  best_match_length=$path_length
+            # Проходим по каждому правилу
+            while IFS= read -r rule; do
+              rule_path=$(echo "$rule" | jq -r '.path')  # Получаем путь для правила
+              owners=$(echo "$rule" | jq -r '.owners')  # Получаем владельцев для этого пути
+
+              # Проверяем, есть ли изменённые файлы, которые соответствуют этому правилу
+              while IFS= read -r file; do
+                clean_file="${file#/}"  # Убираем начальный слеш из пути файла
+
+                if [[ "$clean_file" == "$rule_path"* ]]; then  # Если файл соответствует пути правила
+                  echo "$file:$owners"  # Возвращаем файл и владельцев для проверки
                 fi
+              done <<< "$changed_files"
+            done <<< "$approval_rules"
+          }
+
+          # Функция для проверки, что все владельцы одобрили изменения
+          function check_approval {
+            local owners="$1"  # Список владельцев
+            local approved_reviewers="$2"  # Список ревьюеров, которые одобрили изменения
+            local all_approved=true  # Флаг, показывающий, что все владельцы одобрили
+
+            for owner in $owners; do
+              if ! echo "$approved_reviewers" | grep -q "$owner"; then  # Если владелец не одобрил
+                echo "Error: Required owner $owner has not approved changes."  # Логируем ошибку
+                all_approved=false  # Устанавливаем флаг, что одобрений недостаточно
+              else
+                echo "Owner $owner has approved the changes."  # Логируем успешное одобрение
               fi
             done
 
-            if [[ -n "$best_match" ]]; then
-              # Получаем владельцев, которые должны одобрить изменения для данного пути
-              owners=$(jq -r --arg path "$best_match" '.[$path][]' .github/approval_rules.json)
-              echo "Required owners for $file: $owners"
+            echo "$all_approved"  # Возвращаем результат, все ли владельцы одобрили изменения
+          }
 
-              # Проверяем, что каждый из этих владельцев дал одобрение
-              for owner in $owners; do
-                if ! echo "$approved_reviewers" | grep -q "$owner"; then
-                  echo "Error: Required owner $owner has not approved changes for $file."
-                  all_required_approved=false
-                else
-                  echo "Owner $owner has approved changes for $file."
-                fi
-              done
-            else
-              # Если нет соответствующего правила для файла, пропускаем его
-              echo "No matching rule found for $file. Skipping approval check."
-              files_with_no_rules=false
+          # Читаем данные из файлов
+          approval_rules=$(cat approval_rules.txt)  # Читаем правила из файла
+          approved_reviewers=$(cat approved_reviewers.txt)  # Читаем список одобренных ревьюеров
+          changed_files=$(cat changed_files.txt)  # Читаем список изменённых файлов
+
+          all_required_approved=true  # Флаг, что все необходимые владельцы дали одобрение
+
+          # Сопоставляем правила с изменёнными файлами
+          matched_files=$(match_rules_with_files "$approval_rules" "$changed_files")  # Сопоставляем файлы и правила
+
+          # Проверяем, что все владельцы для соответствующих файлов одобрили изменения
+          while IFS=: read -r file owners; do
+            echo "Processing file: $file, required owners: $owners"  # Логируем информацию о файле и владельцах
+
+            # Проверяем, что все владельцы одобрили изменения
+            all_approved=$(check_approval "$owners" "$approved_reviewers")
+
+            if [[ "$all_approved" = false ]]; then  # Если хотя бы один владелец не одобрил
+              all_required_approved=false  # Флаг, что не все необходимые владельцы одобрили
             fi
-          done < changed_files.txt
+          done <<< "$matched_files"  # Перебираем все сопоставленные файлы
 
-          # Если все владельцы одобрили или директории не требуют одобрения, продолжаем
-          if [ "$all_required_approved" = false ]; then
-            echo "Not all required owners have approved the changes."
-            exit 1
-          elif [ "$files_with_no_rules" = false ]; then
-            echo "Some files have no matching approval rules. Skipping approval for those."
-            exit 0
+          # Окончательное решение
+          if [ "$all_required_approved" = false ]; then  # Если не все владельцы одобрили
+            echo "Not all required owners have approved the changes."  # Логируем ошибку
+            exit 1  # Выходим с ошибкой, что блокирует слияние PR
           else
-            echo "All required owners have approved the changes."
+            echo "All required owners have approved the changes."  # Логируем успех
           fi
