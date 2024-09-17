@@ -7,6 +7,7 @@ on:
 jobs:
   check-required-approvals:
     runs-on: ubuntu-latest
+    if: github.event.review.state == 'approved'
 
     steps:
       - name: Checkout code
@@ -42,35 +43,39 @@ jobs:
       - name: Check if all required owners approved
         run: |
           echo "Checking if all required owners approved changes..."
+          # Читаем изменённые файлы в массив
+          mapfile -t changed_files < changed_files.txt
+
+          # Загружаем правила одобрения
+          approval_rules=$(cat .github/approval_rules.json)
           paths=$(jq -r 'keys[]' .github/approval_rules.json)
           approved_reviewers=$(cat approved_reviewers.txt)
           all_required_approved=true
           required_owners=()
 
-          # Проходим по каждому измененному файлу
-          while IFS= read -r file; do
-            echo "Processing file: $file"
-            clean_file="${file#/}"
+          # Проходим по каждому правилу
+          for path in $paths; do
+            clean_path="${path#/}"
+            owners=$(jq -r --arg path "$path" '.[$path][]' .github/approval_rules.json)
+            echo "Processing rule for path '$path' with owners: $owners"
 
-            # Ищем все правила, которые подходят для этого файла
-            file_required_owners=()
-            for path in $paths; do
-              clean_path="${path#/}"
+            # Находим файлы, соответствующие этому правилу
+            matched_files=()
+            for file in "${changed_files[@]}"; do
+              clean_file="${file#/}"
               if [[ "$clean_file" == "$clean_path"* ]]; then
-                # Получаем владельцев для этого пути
-                owners=$(jq -r --arg path "$path" '.[$path][]' .github/approval_rules.json)
-                echo "Found matching path '$path' for file '$file' with owners: $owners"
-                file_required_owners+=($owners)
+                matched_files+=("$file")
               fi
             done
 
-            if [[ ${#file_required_owners[@]} -eq 0 ]]; then
-              echo "No matching approval rules found for file: $file"
+            if [[ ${#matched_files[@]} -eq 0 ]]; then
+              echo "No changed files match the rule for path '$path'"
             else
-              # Добавляем владельцев в общий список требуемых владельцев
-              required_owners+=(${file_required_owners[@]})
+              echo "Files matching rule '$path': ${matched_files[@]}"
+              # Добавляем владельцев в список требуемых владельцев
+              required_owners+=(${owners})
             fi
-          done < changed_files.txt
+          done
 
           # Убираем дубликаты из списка требуемых владельцев
           unique_required_owners=($(echo "${required_owners[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
